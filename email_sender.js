@@ -3,18 +3,19 @@ const fs = require("fs");
 const path = require("path");
 const csv = require("csv-parser");
 const createCsvWriter = require("csv-writer").createObjectCsvWriter;
+require("dotenv").config(); // Add this to use .env file
 
-// Email configuration
+// Email configuration - load from environment variables
 const ZOHO_ACCOUNTS = [
    {
-      email: "team@dummy.com", // Replace with env variable
-      password: "dummy", // Replace with env variable
-      displayName: "Team",
+      email: process.env.ZOHO_EMAIL_1,
+      password: process.env.ZOHO_PASSWORD_1,
+      displayName: process.env.DISPLAY_NAME_1 || "Team",
    },
    {
-      email: "support@dummy.com", // Replace with env variable
-      password: "dummy", // Replace with env variable
-      displayName: "Support",
+      email: process.env.ZOHO_EMAIL_2,
+      password: process.env.ZOHO_PASSWORD_2,
+      displayName: process.env.DISPLAY_NAME_2 || "Support",
    },
 ];
 
@@ -26,6 +27,26 @@ const USE_SSL = process.env.USE_SSL !== "false";
 // Path to store logs and track emails sent
 const LOG_FILE = path.join(__dirname, "email_log.txt");
 const RECIPIENTS_FILE = path.join(__dirname, "recipients.csv");
+const UNSUBSCRIBE_FILE = path.join(__dirname, "unsubscribes.txt");
+
+// Validate configuration before starting
+const validateConfig = () => {
+   let isValid = true;
+
+   // Check if email accounts are properly configured
+   ZOHO_ACCOUNTS.forEach((account, index) => {
+      if (!account.email || !account.password) {
+         console.error(
+            `⚠️ Account #${
+               index + 1
+            } missing email or password. Check your .env file.`
+         );
+         isValid = false;
+      }
+   });
+
+   return isValid;
+};
 
 // Create transporters for each account
 const createTransporter = (account) => {
@@ -79,6 +100,28 @@ const createSampleRecipients = () => {
    }
 };
 
+// Process unsubscribe requests
+const processUnsubscribes = () => {
+   const unsubscribedEmails = new Set();
+
+   if (fs.existsSync(UNSUBSCRIBE_FILE)) {
+      const unsubscribes = fs.readFileSync(UNSUBSCRIBE_FILE, "utf8");
+      unsubscribes.split("\n").forEach((email) => {
+         const trimmedEmail = email.trim();
+         if (trimmedEmail) {
+            unsubscribedEmails.add(trimmedEmail.toLowerCase());
+         }
+      });
+      console.log(`Loaded ${unsubscribedEmails.size} unsubscribed emails`);
+   } else {
+      // Create the unsubscribe file if it doesn't exist
+      fs.writeFileSync(UNSUBSCRIBE_FILE, "");
+      console.log(`Created empty unsubscribe file at ${UNSUBSCRIBE_FILE}`);
+   }
+
+   return unsubscribedEmails;
+};
+
 // Load recipients from CSV file
 const loadRecipients = () => {
    return new Promise((resolve, reject) => {
@@ -120,6 +163,10 @@ const loadSentEmails = () => {
             }
          }
       }
+      console.log(`Loaded ${sentEmails.size} previously sent emails`);
+   } else {
+      console.log("No previous email log found. Creating a new one.");
+      fs.writeFileSync(LOG_FILE, "");
    }
 
    return sentEmails;
@@ -137,42 +184,66 @@ const logEmail = (account, recipientEmail) => {
    );
 };
 
-// Send email using Zoho SMTP
-const sendEmail = async (account, recipient) => {
-   const transporter = createTransporter(account);
+// Add unsubscribe link to email content
+const addUnsubscribeLink = (emailBody, account, recipient) => {
+   const unsubscribeText = `
+  <p style="font-size: 12px; color: #666; margin-top: 20px; border-top: 1px solid #eee; padding-top: 10px;">
+    To unsubscribe from these emails, please <a href="mailto:${
+       account.email
+    }?subject=Unsubscribe%20${encodeURIComponent(
+      recipient.email
+   )}">click here</a> 
+    or reply with "Unsubscribe" in the subject line.
+  </p>`;
 
-   // Format email with HTML wrapper if needed
-   let emailBody = recipient.body;
    if (!emailBody.trim().startsWith("<")) {
-      // If the body doesn't start with HTML tag, wrap it in basic HTML
-      emailBody = `
+      // Plain text - wrap in HTML
+      return `
     <html>
     <body>
     <p>Hello ${recipient.name},</p>
     <p>${emailBody}</p>
     <p>Best regards,<br>${account.displayName}</p>
+    ${unsubscribeText}
     </body>
     </html>
     `;
+   } else if (emailBody.includes("</body>")) {
+      // HTML with body tag - insert before closing body
+      return emailBody.replace("</body>", `${unsubscribeText}</body>`);
+   } else {
+      // HTML without body tag - append
+      return `${emailBody}${unsubscribeText}`;
    }
+};
+
+// Send email using Zoho SMTP
+const sendEmail = async (account, recipient) => {
+   const transporter = createTransporter(account);
+
+   // Add unsubscribe link to email body
+   const emailBody = addUnsubscribeLink(recipient.body, account, recipient);
 
    const mailOptions = {
       from: `"${account.displayName}" <${account.email}>`,
       to: recipient.email,
       subject: recipient.subject,
       html: emailBody,
+      headers: {
+         "List-Unsubscribe": `<mailto:${account.email}?subject=Unsubscribe ${recipient.email}>`,
+      },
    };
 
    try {
       await transporter.sendMail(mailOptions);
       logEmail(account, recipient.email);
       console.log(
-         `Email sent successfully to ${recipient.email} from ${account.email}`
+         `✅ Email sent successfully to ${recipient.email} from ${account.email}`
       );
       return true;
    } catch (error) {
       console.error(
-         `Failed to send email to ${recipient.email} from ${account.email}: ${error.message}`
+         `❌ Failed to send email to ${recipient.email} from ${account.email}: ${error.message}`
       );
       return false;
    }
@@ -183,15 +254,24 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Main function
 const main = async () => {
-   console.log("Starting email sender...");
+   console.log("🚀 Starting email sender...");
 
-   // Load recipients and track sent emails
+   // Validate configuration
+   if (!validateConfig()) {
+      console.error(
+         "⛔ Invalid configuration. Please check your .env file and try again."
+      );
+      return;
+   }
+
+   // Load recipients, sent emails, and unsubscribes
    const recipients = await loadRecipients();
    const sentEmails = loadSentEmails();
+   const unsubscribedEmails = processUnsubscribes();
 
    if (recipients.length === 0) {
       console.log(
-         "No recipients found in CSV file. Please add recipients to recipients.csv"
+         "⚠️ No recipients found in CSV file. Please add recipients to recipients.csv"
       );
       return;
    }
@@ -201,14 +281,32 @@ const main = async () => {
    const sentCount = {};
 
    ZOHO_ACCOUNTS.forEach((account) => {
-      dailyLimit[account.email] = 50; // 50 emails per account
+      dailyLimit[account.email] = parseInt(
+         process.env.DAILY_LIMIT_PER_ACCOUNT || "50"
+      );
       sentCount[account.email] = 0;
    });
 
+   // Count how many emails we will send
+   const eligibleRecipients = recipients.filter(
+      (r) =>
+         !sentEmails.has(r.email) &&
+         !unsubscribedEmails.has(r.email.toLowerCase())
+   );
+   console.log(
+      `📊 Found ${eligibleRecipients.length} eligible recipients out of ${recipients.length} total`
+   );
+
    // Send emails
    for (const recipient of recipients) {
-      // Skip if we've already sent to this recipient
+      // Skip if we've already sent to this recipient or they've unsubscribed
       if (sentEmails.has(recipient.email)) {
+         console.log(`⏩ Skipping ${recipient.email} - already sent`);
+         continue;
+      }
+
+      if (unsubscribedEmails.has(recipient.email.toLowerCase())) {
+         console.log(`⏩ Skipping ${recipient.email} - unsubscribed`);
          continue;
       }
 
@@ -218,14 +316,14 @@ const main = async () => {
       );
 
       if (availableAccounts.length === 0) {
-         console.log("All accounts have reached their daily sending limits");
+         console.log("🛑 All accounts have reached their daily sending limits");
          break;
       }
 
       // Pick an account, alternating between them to distribute emails
       let account = availableAccounts[0];
       if (availableAccounts.length > 1) {
-         // If both accounts available, pick the one with fewer sent emails
+         // If multiple accounts available, pick the one with fewer sent emails
          account = availableAccounts.reduce(
             (min, acc) =>
                sentCount[acc.email] < sentCount[min.email] ? acc : min,
@@ -239,15 +337,19 @@ const main = async () => {
       if (success) {
          sentCount[account.email]++;
          console.log(
-            `Progress: ${account.email} has sent ${sentCount[account.email]}/${
-               dailyLimit[account.email]
-            } emails`
+            `📈 Progress: ${account.email} has sent ${
+               sentCount[account.email]
+            }/${dailyLimit[account.email]} emails`
          );
 
          // Add small delay between emails (5-15 seconds) to avoid triggering spam filters
-         const delayTime = Math.floor(Math.random() * (15 - 5 + 1) + 5) * 1000;
+         const minDelay = parseInt(process.env.MIN_DELAY_SECONDS || "5");
+         const maxDelay = parseInt(process.env.MAX_DELAY_SECONDS || "15");
+         const delayTime =
+            Math.floor(Math.random() * (maxDelay - minDelay + 1) + minDelay) *
+            1000;
          console.log(
-            `Waiting ${delayTime / 1000} seconds before next email...`
+            `⏱️ Waiting ${delayTime / 1000} seconds before next email...`
          );
          await delay(delayTime);
       }
@@ -257,13 +359,13 @@ const main = async () => {
          (acc) => sentCount[acc.email] >= dailyLimit[acc.email]
       );
       if (allLimitsReached) {
-         console.log("All accounts have reached their daily sending limits");
+         console.log("🛑 All accounts have reached their daily sending limits");
          break;
       }
    }
 
-   console.log("\nEmail sending complete!");
-   console.log("Summary:");
+   console.log("\n✨ Email sending complete!");
+   console.log("📝 Summary:");
    ZOHO_ACCOUNTS.forEach((account) => {
       console.log(
          `- ${account.email}: Sent ${sentCount[account.email]}/${
@@ -274,4 +376,7 @@ const main = async () => {
 };
 
 // Run the program
-main().catch(console.error);
+main().catch((error) => {
+   console.error("❌ An error occurred:", error);
+   process.exit(1);
+});
