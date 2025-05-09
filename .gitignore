@@ -1,0 +1,27 @@
+# Environment variables
+.env
+
+# Logs
+logs
+*.log
+email_log.txt
+
+# Runtime data
+recipients.csv
+unsubscribes.txt
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# dotenv environment variable files
+.env
+
+# Operating System Files
+.DS_Store
+Thumbs.db

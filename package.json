@@ -1,0 +1,28 @@
+{
+   "name": "zoho-email-sender",
+   "version": "1.0.0",
+   "description": "A simple API to send emails via Zoho SMTP",
+   "main": "index.js",
+   "scripts": {
+      "start": "node email_sender.js",
+      "dev": "nodemon email_sender.js"
+   },
+   "keywords": [
+      "email",
+      "zoho",
+      "smtp"
+   ],
+   "author": "",
+   "license": "ISC",
+   "dependencies": {
+      "cors": "^2.8.5",
+      "dotenv": "^16.5.0",
+      "express": "^4.21.2",
+      "nodemailer": "^6.10.1",
+      "csv-parser": "^3.0.0",
+      "csv-writer": "^1.6.0"
+   },
+   "devDependencies": {
+      "nodemon": "^2.0.22"
+   }
+}
